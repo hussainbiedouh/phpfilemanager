@@ -36,7 +36,7 @@ A modern, feature-rich web-based file management system that mimics Windows Expl
 
 ## 🛠️ Requirements
 
-- PHP 7.0 or higher
+- PHP 5.6.40 or higher
 - Web server (Apache/Nginx)
 - UTF-8 support enabled
 
