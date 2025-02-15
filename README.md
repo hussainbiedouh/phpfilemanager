@@ -76,6 +76,7 @@ The file manager works out of the box with default settings. You can modify the 
 - Allowed file types
 - Interface customization
 - Path configurations
+- Password Protection: To enable password protection, open 'phpfilemanager/index.php' and set the $password variable to the MD5 hash of your desired password (e.g. md5('yourpassword')). Leave it empty for no protection.
 
 ## 🎨 Customization
 

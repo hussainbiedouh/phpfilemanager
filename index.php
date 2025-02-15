@@ -51,10 +51,116 @@
  * - Mobile-optimized layouts
  * - Dark mode support
  * 
+ * 🔒 Password Protection:
+ * - Optional: To enable password protection, set the $password variable below with the MD5 hash of your password (e.g. md5('yourpassword')). Leave it blank for no protection.
+ * 
  * @author Hussain Biedouh
  * @version 1.0.0
  * @license MIT
  */
+
+// Password protection configuration
+$password = ''; // MD5 hash of your password, e.g. md5('yourpassword'). Leave empty for no password protection.
+
+session_start();
+if (isset($_GET['logout'])) {
+    session_destroy();
+    header("Location: " . $_SERVER['PHP_SELF']);
+    exit;
+}
+
+if ($password !== '') {
+    if (!isset($_SESSION['logged_in']) || $_SESSION['logged_in'] !== true) {
+        if (isset($_POST['login_password'])) {
+            if (md5($_POST['login_password']) === $password) {
+                $_SESSION['logged_in'] = true;
+                header("Location: " . $_SERVER['REQUEST_URI']);
+                exit;
+            } else {
+                $login_error = "Invalid password";
+            }
+        }
+        ?>
+        <!DOCTYPE html>
+        <html>
+        <head>
+            <meta charset="UTF-8">
+            <title>Login</title>
+            <meta name="viewport" content="width=device-width, initial-scale=1">
+            <style>
+                body {
+                    margin: 0;
+                    padding: 0;
+                    display: flex;
+                    align-items: center;
+                    justify-content: center;
+                    height: 100vh;
+                    font-family: Arial, sans-serif;
+                    background: #f0f2f5;
+                }
+                .login-container {
+                    background: #fff;
+                    padding: 40px;
+                    border-radius: 8px;
+                    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                    width: 90%;
+                    max-width: 400px;
+                }
+                .login-container h2 {
+                    text-align: center;
+                    margin-bottom: 20px;
+                    font-weight: 500;
+                    color: #333;
+                }
+                .login-container label {
+                    display: block;
+                    margin-bottom: 8px;
+                    color: #555;
+                }
+                .login-container input[type="password"] {
+                    width: 100%;
+                    padding: 10px;
+                    margin-bottom: 20px;
+                    border: 1px solid #ccc;
+                    border-radius: 4px;
+                    font-size: 16px;
+                }
+                .login-container button {
+                    width: 100%;
+                    padding: 10px;
+                    background-color: #007bff;
+                    border: none;
+                    border-radius: 4px;
+                    color: #fff;
+                    font-size: 16px;
+                    cursor: pointer;
+                }
+                .login-container button:hover {
+                    background-color: #0056b3;
+                }
+                .error {
+                    color: red;
+                    text-align: center;
+                    margin-bottom: 15px;
+                }
+            </style>
+        </head>
+        <body>
+            <div class="login-container">
+                <h2>Login</h2>
+                <?php if (isset($login_error)) { echo '<p class="error">' . $login_error . '</p>'; } ?>
+                <form method="post" action="">
+                    <label for="login_password">Password</label>
+                    <input type="password" name="login_password" id="login_password" required>
+                    <button type="submit">Login</button>
+                </form>
+            </div>
+        </body>
+        </html>
+        <?php
+        exit;
+    }
+}
 
 // Set UTF-8 encoding for proper handling of Arabic and other Unicode characters
 header('Content-Type: text/html; charset=utf-8');
@@ -1229,7 +1335,8 @@ html, body {
         <button onclick="toggleView()" title="Switch View">
             <img src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iMjQiIGhlaWdodD0iMjQiIHZpZXdCb3g9IjAgMCAyNCAyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48ZyBmaWxsPSIjMjE5NkYzIj48cmVjdCB4PSIzIiB5PSIzIiB3aWR0aD0iNyIgaGVpZ2h0PSI3IiByeD0iMSIvPjxyZWN0IHg9IjE0IiB5PSIzIiB3aWR0aD0iNyIgaGVpZ2h0PSI3IiByeD0iMSIvPjxyZWN0IHg9IjMiIHk9IjE0IiB3aWR0aD0iNyIgaGVpZ2h0PSI3IiByeD0iMSIvPjxyZWN0IHg9IjE0IiB5PSIxNCIgd2lkdGg9IjciIGhlaWdodD0iNyIgcng9IjEiLz48L2c+PC9zdmc+" alt="View Mode" style="width: 20px; height: 20px;">
         </button>
-</div>
+        <button onclick="location.href='?logout=1'" title="Logout">🔓</button>
+    </div>
     <div class="address-search-container">
         <input type="text" id="pathBar" placeholder="Address">
         <input type="text" id="searchBar" placeholder="🔍 Search...">
