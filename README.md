@@ -122,8 +122,7 @@ Feel free to submit issues and enhancement requests!
 4. Use keyboard shortcuts for quick operations
 
 ## ⚠️ Known Limitations
-
-- Large directory listings may take time to load
+- Large directory listings may take time to load (a loading spinner will appear next to the path bar during processing)
 - Some operations may be restricted by server permissions
 - File preview limited to supported formats
 
