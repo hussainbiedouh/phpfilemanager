@@ -170,10 +170,10 @@ mb_regex_encoding('UTF-8');
 
 // ★★ Added helper functions for encoding conversion ★★
 function toSystem($str) {
-    return iconv('UTF-8', 'CP1256//IGNORE', $str);
+    return iconv('UTF-8', 'CP1252//IGNORE', $str);
 }
 function toUTF8($str) {
-    return iconv('CP1256', 'UTF-8//IGNORE', $str);
+    return iconv('CP1252', 'UTF-8//IGNORE', $str);
 }
 
 // Windows File Explorer Simulator - Single self-contained PHP file
@@ -192,15 +192,83 @@ if(isset($_GET['action'])) {
             $path = isset($_GET['path']) ? $_GET['path'] : 'ThisPC';
             if($path === 'ThisPC'){
                 $drives = [];
-                for($i = 65; $i <= 90; $i++){
-                    $drive = chr($i).":\\";
-                    if(is_dir($drive)){
-                        $total = @disk_total_space($drive);
-                        $free = @disk_free_space($drive);
-                        $used = $total - $free;
-                        $drives[] = array("name" => chr($i) . ":", "path" => $drive, "total" => $total, "free" => $free, "used" => $used);
+                
+                if (strtoupper(substr(PHP_OS, 0, 3)) === 'WIN') {
+                    // Better drive detection for Windows using COM
+                    try {
+                        // Try using COM for better drive detection (requires COM enabled)
+                        if (class_exists('COM')) {
+                            try {
+                                $filesystem = new COM('Scripting.FileSystemObject');
+                                $drives_obj = $filesystem->Drives;
+                                
+                                foreach ($drives_obj as $drive) {
+                                    if ($drive->IsReady) {
+                                        $letter = $drive->DriveLetter . ':';
+                                        $drivePath = $letter . '\\';
+                                        $total = @disk_total_space($drivePath);
+                                        $free = @disk_free_space($drivePath);
+                                        $used = $total - $free;
+                                        $drives[] = array("name" => $letter, "path" => $drivePath, "total" => $total, "free" => $free, "used" => $used);
+                                    }
+                                }
+                            } catch (Exception $e) {
+                                // COM failed, log error and use fallback
+                                error_log("COM Drive detection failed: " . $e->getMessage());
+                            }
+                        }
+                        
+                        // If no drives detected by COM or COM not available, use fallback
+                        if (empty($drives)) {
+                            // Fallback to the traditional method but with better error handling
+                            for($i = 65; $i <= 90; $i++){
+                                $drive = chr($i).":\\";
+                                if(is_dir($drive) && is_readable($drive)){
+                                    $total = @disk_total_space($drive);
+                                    $free = @disk_free_space($drive);
+                                    
+                                    // Only add drive if we can get size information
+                                    if ($total !== false && $free !== false) {
+                                        $used = $total - $free;
+                                        $drives[] = array("name" => chr($i) . ":", "path" => $drive, "total" => $total, "free" => $free, "used" => $used);
+                                    }
+                                }
+                            }
+                        }
+                    } catch (Exception $e) {
+                        // If COM fails, fall back to the traditional method
+                        error_log("Drive detection error: " . $e->getMessage());
+                        for($i = 65; $i <= 90; $i++){
+                            $drive = chr($i).":\\";
+                            if(is_dir($drive) && is_readable($drive)){
+                                $total = @disk_total_space($drive);
+                                $free = @disk_free_space($drive);
+                                if ($total !== false && $free !== false) {
+                                    $used = $total - $free;
+                                    $drives[] = array("name" => chr($i) . ":", "path" => $drive, "total" => $total, "free" => $free, "used" => $used);
+                                }
+                            }
+                        }
                     }
+                    
+                    // Fallback if still no drives found
+                    if (empty($drives)) {
+                        $drives[] = array(
+                            "name" => "C:", 
+                            "path" => "C:\\", 
+                            "total" => disk_total_space("C:\\") ?: 0, 
+                            "free" => disk_free_space("C:\\") ?: 0, 
+                            "used" => (disk_total_space("C:\\") ?: 0) - (disk_free_space("C:\\") ?: 0)
+                        );
+                    }
+                } else {
+                    // Linux/Unix/Mac - just show the root directory
+                    $total = @disk_total_space('/');
+                    $free = @disk_free_space('/');
+                    $used = $total - $free;
+                    $drives[] = array("name" => "Root", "path" => "/", "total" => $total, "free" => $free, "used" => $used);
                 }
+                
                 echo json_encode(array("status"=>"success", "data"=>$drives));
             } else {
                 // Convert the incoming UTF-8 path to system encoding
@@ -327,6 +395,24 @@ if(isset($_GET['action'])) {
                 echo json_encode(array("status"=>"error", "message"=>"Failed to create folder."));
             }
             exit;
+        case 'new_text_file':
+            $path = $_POST['path'];
+            $name = $_POST['name'];
+            if(isRestricted($path)){
+                echo json_encode(array("status"=>"error", "message"=>"Access to system-critical directories is restricted."));
+                exit;
+            }
+            $pathSys = toSystem($path);
+            $nameSys = toSystem($name);
+            $newFileSys = rtrim($pathSys, '\\/') . DIRECTORY_SEPARATOR . $nameSys;
+            
+            if(file_put_contents($newFileSys, '') !== false){
+                $newFileUTF8 = rtrim($path, '\\/') . DIRECTORY_SEPARATOR . $name;
+                echo json_encode(array("status"=>"success", "file"=>$newFileUTF8));
+            } else {
+                echo json_encode(array("status"=>"error", "message"=>"Failed to create text file."));
+            }
+            exit;
         case 'copy':
             $source = $_POST['source'];
             $destination = $_POST['destination'];
@@ -373,6 +459,181 @@ if(isset($_GET['action'])) {
             } else {
                 echo json_encode(array("status"=>"error", "message"=>"Move failed."));
             }
+            exit;
+        case 'upload':
+            $targetPath = isset($_POST['path']) ? $_POST['path'] : '';
+            if(isRestricted($targetPath)){
+                echo json_encode(array("status"=>"error", "message"=>"Access to system-critical directories is restricted."));
+                exit;
+            }
+            
+            $targetSysPath = toSystem($targetPath);
+            
+            if (!is_dir($targetSysPath)) {
+                echo json_encode(array("status"=>"error", "message"=>"Target folder does not exist."));
+                exit;
+            }
+            
+            $uploadedFiles = [];
+            $errors = [];
+            
+            if (isset($_FILES['files'])) {
+                $files = $_FILES['files'];
+                $fileCount = is_array($files['name']) ? count($files['name']) : 1;
+                
+                for ($i = 0; $i < $fileCount; $i++) {
+                    $fileName = is_array($files['name']) ? $files['name'][$i] : $files['name'];
+                    $tmpName = is_array($files['tmp_name']) ? $files['tmp_name'][$i] : $files['tmp_name'];
+                    $error = is_array($files['error']) ? $files['error'][$i] : $files['error'];
+                    
+                    if ($error === UPLOAD_ERR_OK) {
+                        $fileNameSys = toSystem($fileName);
+                        $destination = rtrim($targetSysPath, '\\/') . DIRECTORY_SEPARATOR . $fileNameSys;
+                        
+                        if (move_uploaded_file($tmpName, $destination)) {
+                            $uploadedFiles[] = $fileName;
+                        } else {
+                            $errors[] = "Failed to move uploaded file: $fileName";
+                        }
+                    } else {
+                        $errorMsg = "Upload error for file $fileName: ";
+                        switch ($error) {
+                            case UPLOAD_ERR_INI_SIZE:
+                                $errorMsg .= "File exceeds upload_max_filesize directive in php.ini.";
+                                break;
+                            case UPLOAD_ERR_FORM_SIZE:
+                                $errorMsg .= "File exceeds MAX_FILE_SIZE directive in the HTML form.";
+                                break;
+                            case UPLOAD_ERR_PARTIAL:
+                                $errorMsg .= "File was only partially uploaded.";
+                                break;
+                            case UPLOAD_ERR_NO_FILE:
+                                $errorMsg .= "No file was uploaded.";
+                                break;
+                            case UPLOAD_ERR_NO_TMP_DIR:
+                                $errorMsg .= "Missing temporary folder.";
+                                break;
+                            case UPLOAD_ERR_CANT_WRITE:
+                                $errorMsg .= "Failed to write file to disk.";
+                                break;
+                            case UPLOAD_ERR_EXTENSION:
+                                $errorMsg .= "File upload stopped by extension.";
+                                break;
+                            default:
+                                $errorMsg .= "Unknown upload error.";
+                        }
+                        $errors[] = $errorMsg;
+                    }
+                }
+            }
+            
+            if (empty($errors)) {
+                echo json_encode(array(
+                    "status" => "success", 
+                    "message" => count($uploadedFiles) . " file(s) uploaded successfully.",
+                    "files" => $uploadedFiles
+                ));
+            } else {
+                echo json_encode(array(
+                    "status" => "error", 
+                    "message" => implode(", ", $errors),
+                    "files" => $uploadedFiles
+                ));
+            }
+            exit;
+        case 'download_from_url':
+            $url = isset($_POST['url']) ? $_POST['url'] : '';
+            $targetPath = isset($_POST['path']) ? $_POST['path'] : '';
+            $fileName = isset($_POST['filename']) ? $_POST['filename'] : '';
+            
+            if (empty($url)) {
+                echo json_encode(array("status" => "error", "message" => "URL is required."));
+                exit;
+            }
+            
+            if (empty($targetPath)) {
+                echo json_encode(array("status" => "error", "message" => "Target path is required."));
+                exit;
+            }
+            
+            if (isRestricted($targetPath)) {
+                echo json_encode(array("status" => "error", "message" => "Access to system-critical directories is restricted."));
+                exit;
+            }
+            
+            $targetSysPath = toSystem($targetPath);
+            
+            if (!is_dir($targetSysPath)) {
+                echo json_encode(array("status" => "error", "message" => "Target folder does not exist."));
+                exit;
+            }
+            
+            // If no filename provided, extract it from the URL
+            if (empty($fileName)) {
+                $pathInfo = pathinfo(parse_url($url, PHP_URL_PATH));
+                $fileName = $pathInfo['basename'] ?? 'downloaded_file';
+                
+                // Make sure we have a valid filename
+                if (empty($fileName) || $fileName == '/') {
+                    $fileName = 'downloaded_file';
+                }
+            }
+            
+            $fileSysName = toSystem($fileName);
+            $destinationPath = rtrim($targetSysPath, '\\/') . DIRECTORY_SEPARATOR . $fileSysName;
+            
+            // Initialize cURL session
+            $ch = curl_init($url);
+            
+            // Open file for writing
+            $fp = fopen($destinationPath, 'wb');
+            if (!$fp) {
+                echo json_encode(array("status" => "error", "message" => "Failed to create file for writing."));
+                exit;
+            }
+            
+            // Set cURL options
+            curl_setopt($ch, CURLOPT_FILE, $fp);             // Write to the file
+            curl_setopt($ch, CURLOPT_TIMEOUT, 300);          // 5 minute timeout
+            curl_setopt($ch, CURLOPT_FOLLOWLOCATION, true);  // Follow redirects
+            curl_setopt($ch, CURLOPT_SSL_VERIFYPEER, false); // Don't verify SSL certificates
+            
+            // Execute cURL request
+            $success = curl_exec($ch);
+            
+            // Check for errors
+            if (!$success) {
+                $error = curl_error($ch);
+                fclose($fp);
+                curl_close($ch);
+                @unlink($destinationPath); // Remove the incomplete file
+                echo json_encode(array("status" => "error", "message" => "Download failed: " . $error));
+                exit;
+            }
+            
+            // Get HTTP response code
+            $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+            
+            // Close file and cURL
+            fclose($fp);
+            curl_close($ch);
+            
+            // Check for HTTP errors
+            if ($httpCode >= 400) {
+                @unlink($destinationPath); // Remove the incomplete file
+                echo json_encode(array(
+                    "status" => "error", 
+                    "message" => "Download failed with HTTP error: " . $httpCode
+                ));
+                exit;
+            }
+            
+            // If we got here, the download was successful
+            echo json_encode(array(
+                "status" => "success",
+                "message" => "File downloaded successfully.",
+                "filename" => $fileName
+            ));
             exit;
         case 'get_properties':
             $path = $_GET['path'];
@@ -464,6 +725,31 @@ if(isset($_GET['action'])) {
             header("Content-Type: $mime");
             header('Content-Disposition: inline; filename="' . $filename . '"');
             readfile($pathSys);
+            exit;
+        case 'save_text_file':
+            $path = $_POST['path'];
+            $content = $_POST['content'];
+            
+            if(isRestricted($path)){
+                echo json_encode(array("status"=>"error", "message"=>"Access to system-critical directories is restricted."));
+                exit;
+            }
+            
+            $pathSys = toSystem($path);
+            
+            if(!file_exists($pathSys)) {
+                echo json_encode(array("status"=>"error", "message"=>"File does not exist."));
+                exit;
+            }
+            
+            if(file_put_contents($pathSys, $content) !== false){
+                echo json_encode(array("status"=>"success"));
+            } else {
+                echo json_encode(array("status"=>"error", "message"=>"Failed to save file."));
+            }
+            exit;
+        default:
+            echo json_encode(array("status"=>"error", "message"=>"Invalid action requested."));
             exit;
     }
     exit;
@@ -1355,6 +1641,205 @@ html, body {
     0% { transform: rotate(0deg); }
     100% { transform: rotate(360deg); }
 }
+
+/* Upload notification styling */
+.notification {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    background-color: #f0f0f0;
+    border: 1px solid #ccc;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.2);
+    padding: 15px;
+    border-radius: 4px;
+    z-index: 1000;
+    min-width: 300px;
+    max-width: 400px;
+}
+
+.notification-title {
+    font-weight: bold;
+    margin-bottom: 10px;
+}
+
+.progress-bar {
+    background-color: #ddd;
+    height: 10px;
+    border-radius: 5px;
+    overflow: hidden;
+}
+
+.progress {
+    background-color: #4CAF50;
+    height: 100%;
+    width: 0;
+    transition: width 0.3s ease;
+}
+
+/* Indeterminate progress animation for downloads with unknown size */
+.progress-indeterminate {
+    height: 100%;
+    width: 100%;
+    background: linear-gradient(to right, #ddd 0%, #4CAF50 50%, #ddd 100%);
+    background-size: 200% 100%;
+    animation: progress-bar-indeterminate 1.5s infinite linear;
+}
+
+@keyframes progress-bar-indeterminate {
+    0% { background-position: 200% 0; }
+    100% { background-position: 0 0; }
+}
+
+/* Text Editor Modal Styles */
+.modal {
+    position: fixed;
+    z-index: 1000;
+    left: 0;
+    top: 0;
+    width: 100%;
+    height: 100%;
+    overflow: auto;
+    background-color: rgba(0,0,0,0.5);
+    display: flex;
+    justify-content: center;
+    align-items: center;
+}
+
+.modal-content.text-editor {
+    background-color: #f9f9f9;
+    margin: 5% auto;
+    padding: 0;
+    border: 1px solid #888;
+    border-radius: 8px;
+    box-shadow: 0 4px 8px rgba(0,0,0,0.2);
+    width: 70%;
+    height: 70%;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+.editor-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 16px;
+    background-color: #f0f0f0;
+    border-bottom: 1px solid #ddd;
+}
+
+.editor-title {
+    font-weight: bold;
+    font-size: 1.2em;
+}
+
+.close-btn {
+    color: #aaa;
+    font-size: 28px;
+    font-weight: bold;
+    background: none;
+    border: none;
+    cursor: pointer;
+}
+
+.close-btn:hover {
+    color: black;
+}
+
+.editor-textarea {
+    flex: 1;
+    padding: 12px;
+    font-family: Consolas, monospace;
+    font-size: 14px;
+    line-height: 1.5;
+    border: none;
+    resize: none;
+}
+
+.editor-footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 10px 16px;
+    background-color: #f0f0f0;
+    border-top: 1px solid #ddd;
+}
+
+.save-btn, .cancel-btn {
+    padding: 8px 16px;
+    font-size: 14px;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+.save-btn {
+    background-color: #4CAF50;
+    color: white;
+}
+
+.save-btn:hover {
+    background-color: #45a049;
+}
+
+.cancel-btn {
+    background-color: #f44336;
+    color: white;
+}
+
+.cancel-btn:hover {
+    background-color: #d32f2f;
+}
+
+@media print {
+    body {
+        background: white;
+    }
+    
+    #toolbar,
+    #folderTree,
+    .context-menu,
+    .selection-box {
+        display: none !important;
+    }
+    
+    #container {
+        height: auto;
+        display: block;
+    }
+    
+    #content {
+        overflow: visible;
+        height: auto;
+    }
+    
+    .grid-view,
+    .table-view {
+        page-break-inside: avoid;
+    }
+}
+
+// Convert SVG to data URL
+function svgToDataURL(svg) {
+    try {
+        return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    } catch (e) {
+        console.error('SVG conversion error:', e);
+        return '';
+    }
+}
+
+.error-message {
+    color: #ff3333;
+    padding: 10px;
+    background-color: #ffeeee;
+    border-radius: 4px;
+    text-align: center;
+    margin: 10px 0;
+}
+
+/* Add print styles */
+@media print {
 </style>
 </head>
 <body>
@@ -1408,6 +1893,59 @@ html, body {
 </div>
 
 <script>
+// Add SVG icons as constants at the top of script
+const ICONS = {
+    folder: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#FFC107" d="M20,6h-8l-2-2H4C2.9,4,2,4.9,2,6v12c0,1.1,0.9,2,2,2h16c1.1,0,2-0.9,2-2V8C22,6.9,21.1,6,20,6z"/></svg>`,
+    
+    text: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#607D8B" d="M14,2H6C4.9,2,4,2.9,4,4v16c0,1.1,0.9,2,2,2h12c1.1,0,2-0.9,2-2V8L14,2z M16,18H8v-2h8V18z M16,14H8v-2h8V14z M13,9V3.5L18.5,9H13z"/></svg>`,
+    
+    video: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#F44336" d="M18,4v1h-2V4c0-0.55-0.45-1-1-1H9C8.45,3,8,3.45,8,4v1H6V4c0-1.1,0.9-2,2-2h7C16.1,2,17,2.9,17,4z M20,6H4C2.9,6,2,6.9,2,8v11c0,1.1,0.9,2,2,2h16c1.1,0,2-0.9,2-2V8C22,6.9,21.1,6,20,6z M15,16l-5-3l5-3V16z"/></svg>`,
+    
+    music: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#9C27B0" d="M12,3v10.55c-0.59-0.34-1.27-0.55-2-0.55c-2.21,0-4,1.79-4,4s1.79,4,4,4s4-1.79,4-4V7h4V3H12z"/></svg>`,
+    
+    image: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#4CAF50" d="M21,19V5c0-1.1-0.9-2-2-2H5c-1.1,0-2,0.9-2,2v14c0,1.1,0.9,2,2,2h14C20.1,21,21,20.1,21,19z M8.5,13.5l2.5,3.01L14.5,12l4.5,6H5l3.5-4.5z"/></svg>`,
+    
+    pdf: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#FF5722" d="M20,2H8C6.9,2,6,2.9,6,4v12c0,1.1,0.9,2,2,2h12c1.1,0,2-0.9,2-2V4C22,2.9,21.1,2,20,2z M11.5,9.5c0,0.83-0.67,1.5-1.5,1.5H9v2H7.5V7H10C10.83,7,11.5,7.67,11.5,8.5V9.5z M16.5,11.5c0,0.83-0.67,1.5-1.5,1.5h-2.5V7H15c0.83,0,1.5,0.67,1.5,1.5V11.5z M20.5,8.5H19v1h1.5V11H19v2h-1.5V7h3V8.5z M9,9h1v1H9V9z M4,6H2v14c0,1.1,0.9,2,2,2h14v-2H4V6z M14,11h1V8h-1V11z"/></svg>`,
+    
+    word: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#2196F3" d="M19,3H5C3.9,3,3,3.9,3,5v14c0,1.1,0.9,2,2,2h14c1.1,0,2-0.9,2-2V5C21,3.9,20.1,3,19,3z M15.5,17h-2v-2h2V17z M15.5,13h-2v-2h2V13z M15.5,9h-2V7h2V9z M9.5,17h-2v-2h2V17z M9.5,13h-2v-2h2V13z M9.5,9h-2V7h2V9z"/></svg>`,
+    
+    powerpoint: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#FF5722" d="M19,3H5C3.9,3,3,3.9,3,5v14c0,1.1,0.9,2,2,2h14c1.1,0,2-0.9,2-2V5C21,3.9,20.1,3,19,3z M9.8,13.4V17H8V7h4.3c1.1,0,2,0.9,2,2v2.4c0,1.1-0.9,2-2,2H9.8z M9.8,8.6v3.2h2.5V8.6H9.8z"/></svg>`,
+    
+    excel: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#4CAF50" d="M19,3H5C3.9,3,3,3.9,3,5v14c0,1.1,0.9,2,2,2h14c1.1,0,2-0.9,2-2V5C21,3.9,20.1,3,19,3z M9,17H7v-2h2V17z M9,13H7v-2h2V13z M9,9H7V7h2V9z M13,17h-2v-2h2V17z M13,13h-2v-2h2V13z M13,9h-2V7h2V9z M17,17h-2v-2h2V17z M17,13h-2v-2h2V13z M17,9h-2V7h2V9z"/></svg>`,
+    
+    drive: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#2196F3" d="M20,8h-3V4H3C1.9,4,1,4.9,1,6v12c0,1.1,0.9,2,2,2h18c1.1,0,2-0.9,2-2V10C23,8.9,22.1,8,20,8z M18,16H6v-2h12V16z M17,9H4V6h13V9z"/><circle fill="#ffffff" cx="15" cy="15" r="1"/></svg>`,
+    
+    gridView: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><g fill="#2196F3"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></g></svg>`,
+    
+    listView: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><g fill="#2196F3"><rect x="3" y="4" width="18" height="3" rx="1"/><rect x="3" y="10.5" width="18" height="3" rx="1"/><rect x="3" y="17" width="18" height="3" rx="1"/></g></svg>`,
+    
+    windowsFolder: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path fill="#FFC107" d="M20,6h-8l-2-2H4C2.9,4,2,4.9,2,6v12c0,1.1,0.9,2,2,2h16c1.1,0,2-0.9,2-2V8C22,6.9,21.1,6,20,6z"/>
+        <g transform="translate(4,8) scale(0.7)">
+            <path fill="#00A4EF" d="M3,3h8v8H3V3z"/>
+            <path fill="#F25022" d="M13,3h8v8h-8V3z"/>
+            <path fill="#7FBA00" d="M3,13h8v8H3V13z"/>
+            <path fill="#FFB900" d="M13,13h8v8h-8V13z"/>
+        </g>
+    </svg>`,
+
+    programFilesFolder: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path fill="#FFC107" d="M20,6h-8l-2-2H4C2.9,4,2,4.9,2,6v12c0,1.1,0.9,2,2,2h16c1.1,0,2-0.9,2-2V8C22,6.9,21.1,6,20,6z"/>
+        <g transform="translate(6,8) scale(0.6)">
+            <rect fill="#2196F3" x="2" y="2" width="20" height="20" rx="2"/>
+            <path fill="white" d="M15,10v8h-2v-6h-2v6H9v-8H7v10h10V10H15z"/>
+        </g>
+    </svg>`,
+
+    usersFolder: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+        <path fill="#FFC107" d="M20,6h-8l-2-2H4C2.9,4,2,4.9,2,6v12c0,1.1,0.9,2,2,2h16c1.1,0,2-0.9,2-2V8C22,6.9,21.1,6,20,6z"/>
+        <g transform="translate(6,8) scale(0.6)">
+            <circle fill="#2196F3" cx="12" cy="8" r="4"/>
+            <path fill="#2196F3" d="M12,14c-4,0-8,2-8,6v2h16v-2C20,16,16,14,12,14z"/>
+        </g>
+    </svg>`
+};
+
 // Embedded JavaScript for dynamic functionality 🚀
 
 // Global variables for copy/cut and selection
@@ -1416,6 +1954,7 @@ let currentPath = "";
 let filesData = [];
 let selectedFiles = new Set();
 let lastSelectedIndex = -1;
+let clipboardMonitoringActive = false;
 
 // Add navigation history support
 let navigationHistory = [];
@@ -1446,11 +1985,24 @@ function goForward() {
 
 // Load "This PC" view on start
 window.onload = function() {
+    // Always load drives in the left panel first
     loadDrives();
+    
+    // Check URL parameter for initial path
+    const urlParams = new URLSearchParams(window.location.search);
+    const pathParam = urlParams.get('path');
+    
+    if (pathParam) {
+        // Try to navigate to the path from parameter
+        validateAndNavigateInitial(pathParam);
+    }
+
+    // Start clipboard monitoring
+    startClipboardMonitoring();
 
     const contentArea = document.getElementById('content');
     const fileList = document.getElementById('fileList');
-
+    
     // Add empty space context menu
     contentArea.addEventListener('contextmenu', function(e) {
         if (!e.target.closest('.grid-item') && !e.target.closest('tr')) {
@@ -1496,6 +2048,14 @@ window.onload = function() {
             e.preventDefault();
             e.stopPropagation();
             this.classList.remove('drag-over');
+            
+            // Check if this is an external file drop (from the user's system)
+            if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                handleFileUpload(e.dataTransfer.files, currentPath);
+                return;
+            }
+            
+            // Handle internal drag and drop (files within the file manager)
             if (!e.target.closest('.grid-item') && !e.target.closest('tr')) {
                 const source = e.dataTransfer.getData('text/plain');
                 if(source) {
@@ -1514,42 +2074,51 @@ window.onload = function() {
 
     // Keyboard shortcuts
     document.addEventListener('keydown', function(e) {
-        if(e.ctrlKey && e.key.toLowerCase() === 'a') {
+        // Prevent handling if in an input field or textarea (especially the text editor)
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+        if (e.ctrlKey && e.key.toLowerCase() === 'a') {
             // Ctrl+A: Select all
             e.preventDefault();
             selectedFiles.clear();
             filesData.forEach(file => selectedFiles.add(file.path));
             renderFileList(filesData);
-        } else if(e.ctrlKey && e.key.toLowerCase() === 'c') {
-            // Ctrl+C: Copy selected files
-            if(selectedFiles.size > 0) {
-                handleCopyOrCut('copy');
-            }
+        } else if (e.key === 'Delete') {
             e.preventDefault();
-        } else if(e.ctrlKey && e.key.toLowerCase() === 'x') {
-            // Ctrl+X: Cut selected files
-            if(selectedFiles.size > 0) {
-                handleCopyOrCut('cut');
-            }
-            e.preventDefault();
-        } else if(e.ctrlKey && e.key.toLowerCase() === 'v') {
-            // Ctrl+V: Paste files
-            pasteItems();
-            e.preventDefault();
-        } else if(e.key === 'Delete') {
-            // Delete: Delete selected files
-            if(selectedFiles.size > 0) {
+            if (selectedFiles.size > 0) {
                 deleteItems([...selectedFiles]);
             }
+        } else if (e.key === 'Enter') {
             e.preventDefault();
-        } else if(e.key === 'Enter') {
-            if(selectedFiles.size > 0) {
-                selectedFiles.forEach(file => {
-                    if(file.type === 'folder') loadFolder(file.path);
-                    else openFile(file.path);
-                });
+            if (selectedFiles.size > 0) {
+                // Only one item is selected, so open that.
+                let [selected] = Array.from(selectedFiles);
+                const fileData = filesData.find(f => f.path === selected);
+                if (fileData) {
+                    if (fileData.type === 'folder') {
+                        loadFolder(selected);
+                    } else {
+                        openFile(selected);
+                    }
+                }
             }
+        } else if (e.key === 'Escape') {
             e.preventDefault();
+            selectedFiles.clear();
+            updateSelectionStyles();
+        } else if (e.ctrlKey && e.key.toLowerCase() === 'c') {
+            e.preventDefault();
+            if (selectedFiles.size > 0) {
+                handleCopyOrCut('copy');
+            }
+        } else if (e.ctrlKey && e.key.toLowerCase() === 'x') {
+            e.preventDefault();
+            if (selectedFiles.size > 0) {
+                handleCopyOrCut('cut');
+            }
+        } else if (e.ctrlKey && e.key.toLowerCase() === 'v') {
+            e.preventDefault();
+            pasteItems();
         }
     });
 
@@ -1724,65 +2293,14 @@ window.onload = function() {
     initializeSelectionHandlers();
 };
 
-// Add SVG icons as constants at the top of script
-const ICONS = {
-    folder: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#FFC107" d="M20,6h-8l-2-2H4C2.9,4,2,4.9,2,6v12c0,1.1,0.9,2,2,2h16c1.1,0,2-0.9,2-2V8C22,6.9,21.1,6,20,6z"/></svg>`,
-    
-    text: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#607D8B" d="M14,2H6C4.9,2,4,2.9,4,4v16c0,1.1,0.9,2,2,2h12c1.1,0,2-0.9,2-2V8L14,2z M16,18H8v-2h8V18z M16,14H8v-2h8V14z M13,9V3.5L18.5,9H13z"/></svg>`,
-    
-    video: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#F44336" d="M18,4v1h-2V4c0-0.55-0.45-1-1-1H9C8.45,3,8,3.45,8,4v1H6V4c0-1.1,0.9-2,2-2h7C16.1,2,17,2.9,17,4z M20,6H4C2.9,6,2,6.9,2,8v11c0,1.1,0.9,2,2,2h16c1.1,0,2-0.9,2-2V8C22,6.9,21.1,6,20,6z M15,16l-5-3l5-3V16z"/></svg>`,
-    
-    music: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#9C27B0" d="M12,3v10.55c-0.59-0.34-1.27-0.55-2-0.55c-2.21,0-4,1.79-4,4s1.79,4,4,4s4-1.79,4-4V7h4V3H12z"/></svg>`,
-    
-    image: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#4CAF50" d="M21,19V5c0-1.1-0.9-2-2-2H5c-1.1,0-2,0.9-2,2v14c0,1.1,0.9,2,2,2h14C20.1,21,21,20.1,21,19z M8.5,13.5l2.5,3.01L14.5,12l4.5,6H5l3.5-4.5z"/></svg>`,
-    
-    pdf: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#FF5722" d="M20,2H8C6.9,2,6,2.9,6,4v12c0,1.1,0.9,2,2,2h12c1.1,0,2-0.9,2-2V4C22,2.9,21.1,2,20,2z M11.5,9.5c0,0.83-0.67,1.5-1.5,1.5H9v2H7.5V7H10C10.83,7,11.5,7.67,11.5,8.5V9.5z M16.5,11.5c0,0.83-0.67,1.5-1.5,1.5h-2.5V7H15c0.83,0,1.5,0.67,1.5,1.5V11.5z M20.5,8.5H19v1h1.5V11H19v2h-1.5V7h3V8.5z M9,9h1v1H9V9z M4,6H2v14c0,1.1,0.9,2,2,2h14v-2H4V6z M14,11h1V8h-1V11z"/>
-        <path fill="#333" d="M11.5,9.5c0,0.83-0.67,1.5-1.5,1.5H9v2H7.5V7H10C10.83,7,11.5,7.67,11.5,8.5V9.5z M16.5,11.5c0,0.83-0.67,1.5-1.5,1.5h-2.5V7H15c0.83,0,1.5,0.67,1.5,1.5V11.5z M20.5,8.5H19v1h1.5V11H19v2h-1.5V7h3V8.5z M9,9h1v1H9V9z M4,6H2v14c0,1.1,0.9,2,2,2h14v-2H4V6z M14,11h1V8h-1V11z"/></svg>`,
-    
-    pdf: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#FF5722" d="M20,2H8C6.9,2,6,2.9,6,4v12c0,1.1,0.9,2,2,2h12c1.1,0,2-0.9,2-2V4C22,2.9,21.1,2,20,2z M11.5,9.5c0,0.83-0.67,1.5-1.5,1.5H9v2H7.5V7H10C10.83,7,11.5,7.67,11.5,8.5V9.5z M16.5,11.5c0,0.83-0.67,1.5-1.5,1.5h-2.5V7H15c0.83,0,1.5,0.67,1.5,1.5V11.5z M20.5,8.5H19v1h1.5V11H19v2h-1.5V7h3V8.5z M9,9h1v1H9V9z M4,6H2v14c0,1.1,0.9,2,2,2h14v-2H4V6z M14,11h1V8h-1V11z"/></svg>`,
-    
-    word: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#2196F3" d="M19,3H5C3.9,3,3,3.9,3,5v14c0,1.1,0.9,2,2,2h14c1.1,0,2-0.9,2-2V5C21,3.9,20.1,3,19,3z M15.5,17h-2v-2h2V17z M15.5,13h-2v-2h2V13z M15.5,9h-2V7h2V9z M9.5,17h-2v-2h2V17z M9.5,13h-2v-2h2V13z M9.5,9h-2V7h2V9z"/></svg>`,
-    
-    powerpoint: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#FF5722" d="M19,3H5C3.9,3,3,3.9,3,5v14c0,1.1,0.9,2,2,2h14c1.1,0,2-0.9,2-2V5C21,3.9,20.1,3,19,3z M9.8,13.4V17H8V7h4.3c1.1,0,2,0.9,2,2v2.4c0,1.1-0.9,2-2,2H9.8z M9.8,8.6v3.2h2.5V8.6H9.8z"/></svg>`,
-    
-    excel: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#4CAF50" d="M19,3H5C3.9,3,3,3.9,3,5v14c0,1.1,0.9,2,2,2h14c1.1,0,2-0.9,2-2V5C21,3.9,20.1,3,19,3z M9,17H7v-2h2V17z M9,13H7v-2h2V13z M9,9H7V7h2V9z M13,17h-2v-2h2V17z M13,13h-2v-2h2V13z M13,9h-2V7h2V9z M17,17h-2v-2h2V17z M17,13h-2v-2h2V13z M17,9h-2V7h2V9z"/></svg>`,
-    
-    drive: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path fill="#2196F3" d="M20,8h-3V4H3C1.9,4,1,4.9,1,6v12c0,1.1,0.9,2,2,2h18c1.1,0,2-0.9,2-2V10C23,8.9,22.1,8,20,8z M18,16H6v-2h12V16z M17,9H4V6h13V9z"/><circle fill="#ffffff" cx="15" cy="15" r="1"/></svg>`,
-    
-    gridView: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><g fill="#2196F3"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/></g></svg>`,
-    
-    listView: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><g fill="#2196F3"><rect x="3" y="4" width="18" height="3" rx="1"/><rect x="3" y="10.5" width="18" height="3" rx="1"/><rect x="3" y="17" width="18" height="3" rx="1"/></g></svg>`,
-    
-    windowsFolder: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-        <path fill="#FFC107" d="M20,6h-8l-2-2H4C2.9,4,2,4.9,2,6v12c0,1.1,0.9,2,2,2h16c1.1,0,2-0.9,2-2V8C22,6.9,21.1,6,20,6z"/>
-        <g transform="translate(4,8) scale(0.7)">
-            <path fill="#00A4EF" d="M3,3h8v8H3V3z"/>
-            <path fill="#F25022" d="M13,3h8v8h-8V3z"/>
-            <path fill="#7FBA00" d="M3,13h8v8H3V13z"/>
-            <path fill="#FFB900" d="M13,13h8v8h-8V13z"/>
-        </g>
-    </svg>`,
-
-    programFilesFolder: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-        <path fill="#FFC107" d="M20,6h-8l-2-2H4C2.9,4,2,4.9,2,6v12c0,1.1,0.9,2,2,2h16c1.1,0,2-0.9,2-2V8C22,6.9,21.1,6,20,6z"/>
-        <g transform="translate(6,8) scale(0.6)">
-            <rect fill="#2196F3" x="2" y="2" width="20" height="20" rx="2"/>
-            <path fill="white" d="M15,10v8h-2v-6h-2v6H9v-8H7v10h10V10H15z"/>
-        </g>
-    </svg>`,
-
-    usersFolder: `<svg width="24" height="24" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
-        <path fill="#FFC107" d="M20,6h-8l-2-2H4C2.9,4,2,4.9,2,6v12c0,1.1,0.9,2,2,2h16c1.1,0,2-0.9,2-2V8C22,6.9,21.1,6,20,6z"/>
-        <g transform="translate(6,8) scale(0.6)">
-            <circle fill="#2196F3" cx="12" cy="8" r="4"/>
-            <path fill="#2196F3" d="M12,14c-4,0-8,2-8,6v2h16v-2C20,16,16,14,12,14z"/>
-        </g>
-    </svg>`
-};
-
 // Convert SVG to data URL
 function svgToDataURL(svg) {
-    return 'data:image/svg+xml;base64,' + btoa(svg);
+    try {
+        return 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg);
+    } catch (e) {
+        console.error('SVG conversion error:', e);
+        return '';
+    }
 }
 
 // Update getFileIcon function to use embedded SVGs
@@ -1952,6 +2470,14 @@ function renderFileList(files) {
                     const folderItem = e.target.closest('.grid-item, tr');
                     if (folderItem) {
                         folderItem.classList.remove('drop-target');
+                        
+                        // Check if this is an external file drop (from user's system)
+                        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                            handleFileUpload(e.dataTransfer.files, folderItem.dataset.path);
+                            return;
+                        }
+                        
+                        // Handle internal drag and drop
                         const source = e.dataTransfer.getData('text/plain');
                         if(source) {
                             const targetPath = folderItem.dataset.path;
@@ -2073,6 +2599,14 @@ function renderFileList(files) {
                     const folderRow = e.target.closest('tr');
                     if (folderRow) {
                         folderRow.classList.remove('drop-target');
+                        
+                        // Check if this is an external file drop (from user's system)
+                        if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                            handleFileUpload(e.dataTransfer.files, folderRow.dataset.path);
+                            return;
+                        }
+                        
+                        // Handle internal drag and drop
                         const source = e.dataTransfer.getData('text/plain');
                         if(source) {
                             const targetPath = folderRow.dataset.path;
@@ -2160,8 +2694,92 @@ function handleFileSelection(file, index, event) {
 }
 
 function openFile(path) {
-    // All files open in a new tab using the download action
-    window.open('?action=download&path=' + encodeURIComponent(path), '_blank');
+    // Check if it's a text file
+    const fileName = path.split('\\').pop();
+    const isTextFile = fileName.toLowerCase().endsWith('.txt');
+    
+    if (isTextFile) {
+        openTextEditor(path);
+    } else {
+        // All other files open in a new tab using the download action
+        window.open('?action=download&path=' + encodeURIComponent(path), '_blank');
+    }
+}
+
+function openTextEditor(path) {
+    // Fetch the text file content
+    fetchWithEncoding('?action=viewText&path=' + encodeURIComponent(path))
+    .then(response => response.text())
+    .then(content => {
+        // Create editor modal
+        const modal = document.createElement('div');
+        modal.className = 'modal';
+        
+        const fileName = path.split('\\').pop();
+        
+        modal.innerHTML = `
+            <div class="modal-content text-editor">
+                <div class="editor-header">
+                    <span class="editor-title">${fileName}</span>
+                    <button class="close-btn">×</button>
+                </div>
+                <textarea class="editor-textarea">${content}</textarea>
+                <div class="editor-footer">
+                    <button class="save-btn">💾 Save</button>
+                    <button class="cancel-btn">❌ Cancel</button>
+                </div>
+            </div>
+        `;
+        
+        document.body.appendChild(modal);
+        
+        // Focus the textarea
+        const textarea = modal.querySelector('.editor-textarea');
+        textarea.focus();
+        
+        // Close button event
+        modal.querySelector('.close-btn').onclick = function() {
+            document.body.removeChild(modal);
+        };
+        
+        // Cancel button event
+        modal.querySelector('.cancel-btn').onclick = function() {
+            document.body.removeChild(modal);
+        };
+        
+        // Save button event
+        modal.querySelector('.save-btn').onclick = function() {
+            const newContent = textarea.value;
+            
+            fetchWithEncoding('?action=save_text_file', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+                body: 'path=' + encodeURIComponent(path) + '&content=' + encodeURIComponent(newContent)
+            })
+            .then(response => response.json())
+            .then(data => {
+                if (data.status === 'success') {
+                    document.body.removeChild(modal);
+                    refresh(); // Refresh to update file size, etc.
+                } else {
+                    alert('Error saving file: ' + data.message);
+                }
+            })
+            .catch(error => {
+                alert('Error saving file: ' + error);
+            });
+        };
+        
+        // Close when clicking outside the modal content
+        modal.onclick = function(e) {
+            if (e.target === modal) {
+                document.body.removeChild(modal);
+            }
+        };
+    })
+    .catch(error => {
+        alert('Error opening file: ' + error);
+    });
 }
 
 function showContextMenu(x, y) {
@@ -2181,7 +2799,8 @@ function showContextMenu(x, y) {
         const file = filesData.find(f => f.path === selectedFilesArray[0]);
         if(file.type === 'folder') {
             addMenuItem(menuList, '📂 Open', () => { loadFolder(file.path); });
-    } else {
+            addMenuItem(menuList, '📥 Upload from URL', () => { downloadFromURL(file.path); });
+        } else {
             addMenuItem(menuList, '📄 Open', () => { openFile(file.path); });
         }
     }
@@ -2227,30 +2846,33 @@ function addMenuItem(menuList, text, callback, disabled = false) {
 
 function deleteItems(paths) {
     if(confirm('Are you sure you want to delete ' + paths.length + ' item(s)?')) {
-        let completed = 0;
-        let failed = 0;
-        
-        paths.forEach(path => {
-            fetchWithEncoding('?action=delete', {
-            method: 'POST',
-                headers: {'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},
-            body: 'target=' + encodeURIComponent(path)
-        })
-        .then(response => response.json())
-        .then(data => {
-                if(data.status === 'success') {
-                    completed++;
-            } else {
-                    failed++;
-                }
-                if(completed + failed === paths.length) {
-                    if(failed > 0) {
-                        alert(failed + ' item(s) could not be deleted');
+        // Second confirmation for extra safety
+        if(confirm('⚠️ WARNING: This action cannot be undone! Confirm deletion of ' + paths.length + ' item(s)?')) {
+            let completed = 0;
+            let failed = 0;
+            
+            paths.forEach(path => {
+                fetchWithEncoding('?action=delete', {
+                method: 'POST',
+                    headers: {'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},
+                body: 'target=' + encodeURIComponent(path)
+            })
+            .then(response => response.json())
+            .then(data => {
+                    if(data.status === 'success') {
+                        completed++;
+                } else {
+                        failed++;
                     }
-                    refresh();
-                }
+                    if(completed + failed === paths.length) {
+                        if(failed > 0) {
+                            alert(failed + ' item(s) could not be deleted');
+                        }
+                        refresh();
+                    }
+                });
             });
-        });
+        }
     }
 }
 
@@ -2296,6 +2918,30 @@ function newFolder() {
     }
 }
 
+function newTextFile() {
+    let fileName = prompt('Enter new text file name:');
+    if (fileName) {
+        // Add .txt extension if not present
+        if (!fileName.toLowerCase().endsWith('.txt')) {
+            fileName += '.txt';
+        }
+        
+        fetchWithEncoding('?action=new_text_file', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'},
+            body: 'path=' + encodeURIComponent(currentPath) + '&name=' + encodeURIComponent(fileName)
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.status === 'success') {
+                refresh();
+            } else {
+                alert(data.message);
+            }
+        });
+    }
+}
+
 function refresh() {
     if(currentPath){
         loadFolder(currentPath);
@@ -2323,47 +2969,119 @@ function formatBytes(bytes) {
 
 // Paste operation used by clipboard as well as context menu paste
 function pasteItems() {
+    // First check internal clipboard
     if(clipboard.sources && clipboard.sources.length > 0) {
-        let completed = 0;
-        let failed = 0;
-        const totalOperations = clipboard.sources.length;
+        performPasteOperation(clipboard.sources, clipboard.action);
+    } 
+    // Then try to read from system clipboard if our clipboard is empty
+    else if (navigator.clipboard && navigator.clipboard.readText) {
+        navigator.clipboard.readText()
+            .then(clipText => {
+                if (clipText) {
+                    // Try to parse clipboard content as file paths
+                    const paths = clipText.split('\n').filter(path => path.trim() && /^[A-Za-z]:\\/.test(path.trim()));
+                    if (paths.length > 0) {
+                        performPasteOperation(paths, 'copy');
+                    }
+                }
+            })
+            .catch(err => {
+                console.warn('Unable to read from clipboard:', err);
+            });
+    }
+}
+
+function performPasteOperation(sources, action) {
+    let completed = 0;
+    let failed = 0;
+    const totalOperations = sources.length;
+    
+    const finishOperation = () => {
+        if(completed + failed === totalOperations) {
+            if(failed > 0) {
+                alert(failed + ' item(s) could not be ' + action + 'ed');
+            }
+            if(action === 'cut') {
+                clipboard = { action: '', sources: [] };
+                updateClipboardDisplay();
+            }
+            refresh(); // Refresh after all operations are complete
+        }
+    };
+    
+    sources.forEach(source => {
+        const destination = currentPath + '\\' + source.split('\\').pop();
+        const operationAction = action === 'copy' ? 'copy' : 'move';
         
-        const finishOperation = () => {
-            if(completed + failed === totalOperations) {
-                if(failed > 0) {
-                    alert(failed + ' item(s) could not be ' + clipboard.action + 'ed');
+        fetchWithEncoding('?action=' + operationAction, {
+            method: 'POST',
+            headers: {'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},
+            body: 'source=' + encodeURIComponent(source) + '&destination=' + encodeURIComponent(destination)
+        })
+        .then(response => response.json())
+        .then(data => {
+            if(data.status === 'success') {
+                completed++;
+            } else {
+                failed++;
+            }
+            finishOperation();
+        })
+        .catch(() => {
+            failed++;
+            finishOperation();
+        });
+    });
+}
+
+// Function to attempt monitoring system clipboard
+function startClipboardMonitoring() {
+    if (clipboardMonitoringActive || !navigator.clipboard) {
+        return; // Already monitoring or not supported
+    }
+
+    try {
+        // Set up periodic check for clipboard changes
+        let lastClipboardContent = "";
+        
+        const checkClipboard = async () => {
+            try {
+                const newContent = await navigator.clipboard.readText();
+                if (newContent !== lastClipboardContent) {
+                    lastClipboardContent = newContent;
+                    // Check if the clipboard contains file paths
+                    const paths = newContent.split('\n').filter(path => path.trim() && /^[A-Za-z]:\\/.test(path.trim()));
+                    if (paths.length > 0) {
+                        // Update our internal clipboard to match system clipboard
+                        clipboard = { action: 'copy', sources: paths };
+                        updateClipboardDisplay();
+                    }
                 }
-                if(clipboard.action === 'cut') {
-                    clipboard = { action: '', sources: [] };
-                    updateClipboardDisplay();
-                }
-                refresh(); // Refresh after all operations are complete
+            } catch (e) {
+                console.warn('Clipboard check failed:', e);
             }
         };
+
+        // Check clipboard every 2 seconds
+        const clipboardInterval = setInterval(checkClipboard, 2000);
+        clipboardMonitoringActive = true;
         
-        clipboard.sources.forEach(source => {
-            const destination = currentPath + '\\' + source.split('\\').pop();
-            const action = clipboard.action === 'copy' ? 'copy' : 'move';
-            
-            fetchWithEncoding('?action=' + action, {
-                method: 'POST',
-                headers: {'Content-Type':'application/x-www-form-urlencoded; charset=UTF-8'},
-                body: 'source=' + encodeURIComponent(source) + '&destination=' + encodeURIComponent(destination)
-            })
-            .then(response => response.json())
-            .then(data => {
-                if(data.status === 'success') {
-                    completed++;
-                } else {
-                    failed++;
-                }
-                finishOperation();
-            })
-            .catch(() => {
-                failed++;
-                finishOperation();
-            });
+        // Initial check
+        checkClipboard();
+        
+        console.log('Clipboard monitoring started');
+        
+        // Stop monitoring if page is hidden
+        document.addEventListener('visibilitychange', () => {
+            if (document.hidden) {
+                clearInterval(clipboardInterval);
+                clipboardMonitoringActive = false;
+            } else {
+                startClipboardMonitoring();
+            }
         });
+    } catch (e) {
+        console.warn('Unable to monitor clipboard:', e);
     }
 }
 
@@ -2416,7 +3134,12 @@ function handleDrop(sourcesJson, targetPath) {
                 completed++;
                 if(action === 'copy' && completed + failed === sources.length) {
                     if(confirm('Files were copied. Do you want to delete the originals?')) {
-                        deleteItems(sources);
+                        // Add second confirmation for deletion of originals
+                        if(confirm('⚠️ WARNING: This action cannot be undone! Confirm deletion of original files?')) {
+                            deleteItems(sources);
+                        } else {
+                            refresh();
+                        }
                     } else {
                         refresh();
                     }
@@ -2462,6 +3185,8 @@ function showEmptyContextMenu(x, y) {
     const menuList = document.getElementById('contextMenuList');
     menuList.innerHTML = '';
     addMenuItem(menuList, '📁 New Folder', newFolder);
+    addMenuItem(menuList, '📄 New Text File', newTextFile);
+    addMenuItem(menuList, '📥 Download from URL', () => { downloadFromURL(currentPath); });
     
     // Add paste item with disabled state if clipboard is empty
     if(clipboard.sources && clipboard.sources.length > 0) {
@@ -2505,6 +3230,33 @@ function validateAndNavigate(path) {
     });
 }
 
+function validateAndNavigateInitial(path) {
+    // Check if it's a drive letter
+    if(/^[A-Za-z]:$/.test(path)) {
+        path += '\\';
+    }
+
+    // First validate the path format
+    if(!/^[A-Za-z]:\\/.test(path)) {
+        loadDrives(); // Invalid path, load default
+        return;
+    }
+
+    // Try to navigate to the path from URL parameter
+    fetchWithEncoding('?action=list&path=' + encodeURIComponent(path))
+    .then(response => response.json())
+    .then(data => {
+        if(data.status === 'success') {
+            loadFolder(path);
+        } else {
+            loadDrives(); // Path not found, load default
+        }
+    })
+    .catch(() => {
+        loadDrives(); // Error loading path, load default
+    });
+}
+
 // Update clipboard display whenever it changes
 function updateClipboardDisplay() {
     const clipboardContent = document.getElementById('clipboardContent');
@@ -2540,41 +3292,58 @@ function fetchWithEncoding(url, options = {}) {
 }
 
 function loadDrives() {
+    console.log("Loading drives...");
     fetchWithEncoding('?action=list&path=ThisPC')
     .then(response => response.json())
     .then(data => {
         if(data.status === 'success') {
+            console.log("Drive data received:", data.data);
             const drivesList = document.getElementById('drives');
             drivesList.innerHTML = '';
-            data.data.forEach(drive => {
-                const usedPercentage = (drive.used / drive.total) * 100;
-                let barClass = 'drive-bar';
-                if (usedPercentage > 90) {
-                    barClass += ' danger';
-                } else if (usedPercentage > 70) {
-                    barClass += ' warning';
-                }
+            if(data.data && data.data.length > 0) {
+                data.data.forEach(drive => {
+                    try {
+                        const usedPercentage = (drive.used / drive.total) * 100;
+                        let barClass = 'drive-bar';
+                        if (usedPercentage > 90) {
+                            barClass += ' danger';
+                        } else if (usedPercentage > 70) {
+                            barClass += ' warning';
+                        }
 
-                let li = document.createElement('li');
-                li.innerHTML = `
-                    <div class="drive-info">
-                        <img src="${svgToDataURL(ICONS.drive)}" class="drive-icon" alt="Drive icon">
-                        <span class="drive-name">${drive.name}</span>
-                    </div>
-                    <div class="drive-bar-container">
-                        <div class="${barClass}" style="width: ${usedPercentage}%"></div>
-                    </div>
-                    <div class="drive-space">
-                        ${formatBytes(drive.used)} used of ${formatBytes(drive.total)}
-                    </div>
-                `;
-                li.onclick = () => {
-                    currentPath = drive.path;
-                    loadFolder(drive.path);
-                };
-                drivesList.appendChild(li);
-            });
+                        let li = document.createElement('li');
+                        li.innerHTML = `
+                            <div class="drive-info">
+                                <img src="${svgToDataURL(ICONS.drive)}" class="drive-icon" alt="Drive icon">
+                                <span class="drive-name">${drive.name}</span>
+                            </div>
+                            <div class="drive-bar-container">
+                                <div class="${barClass}" style="width: ${usedPercentage}%"></div>
+                            </div>
+                            <div class="drive-space">
+                                ${formatBytes(drive.used)} used of ${formatBytes(drive.total)}
+                            </div>
+                        `;
+                        li.onclick = () => {
+                            currentPath = drive.path;
+                            loadFolder(drive.path);
+                        };
+                        drivesList.appendChild(li);
+                    } catch(e) {
+                        console.error("Error rendering drive:", drive, e);
+                    }
+                });
+            } else {
+                console.error("No drives found in the data");
+                drivesList.innerHTML = '<li class="error-message">No drives available</li>';
+            }
+        } else {
+            console.error("Error loading drives:", data);
         }
+    })
+    .catch(error => {
+        console.error("Failed to load drives:", error);
+        document.getElementById('drives').innerHTML = '<li class="error-message">Failed to load drives</li>';
     });
 }
 
@@ -2582,6 +3351,21 @@ function loadFolder(path, addHistory = true) {
     if (addHistory) {
         addToHistory(path);
     }
+    
+    // Update URL parameter without reloading the page
+    const url = new URL(window.location.href);
+    
+    if (path === 'ThisPC') {
+        // Clear path parameter if navigating to "This PC"
+        url.searchParams.delete('path');
+    } else {
+        // Set path parameter
+        url.searchParams.set('path', path);
+    }
+    
+    // Update the URL without reloading the page
+    window.history.pushState({}, '', url);
+    
     currentPath = path;
     const pathBar = document.getElementById('pathBar');
     pathBar.value = path;
@@ -2709,7 +3493,20 @@ function animateToClipboard(items, action) {
 function handleCopyOrCut(action) {
     const selectedFilesArray = [...selectedFiles];
     if (selectedFilesArray.length > 0) {
+        // Update internal clipboard
         animateToClipboard(selectedFilesArray, action);
+        
+        // If possible, also update system clipboard with file paths
+        try {
+            const textData = selectedFilesArray.join('\n');
+            navigator.clipboard.writeText(textData).then(() => {
+                console.log('File paths copied to system clipboard');
+            }).catch(err => {
+                console.warn('Could not copy to system clipboard:', err);
+            });
+        } catch (e) {
+            console.warn('System clipboard API not available:', e);
+        }
     }
 }
 
@@ -2825,49 +3622,131 @@ function initializeSelectionHandlers() {
     });
 }
 
-// Update keyboard event handling to remove multi-select shortcuts
-document.addEventListener('keydown', function(e) {
-    // Prevent handling if in an input field
-    if (e.target.tagName === 'INPUT') return;
-
-    if (e.key === 'Delete') {
-        e.preventDefault();
-        if (selectedFiles.size > 0) {
-            deleteItems([...selectedFiles]);
-        }
-    } else if (e.key === 'Enter') {
-        e.preventDefault();
-        if (selectedFiles.size > 0) {
-            // Only one item is selected, so open that.
-            let [selected] = Array.from(selectedFiles);
-            const fileData = filesData.find(f => f.path === selected);
-            if (fileData) {
-                if (fileData.type === 'folder') {
-                    loadFolder(selected);
-                } else {
-                    openFile(selected);
-                }
-            }
-        }
-    } else if (e.key === 'Escape') {
-        e.preventDefault();
-        selectedFiles.clear();
-        updateSelectionStyles();
-    } else if (e.ctrlKey && e.key.toLowerCase() === 'c') {
-        e.preventDefault();
-        if (selectedFiles.size > 0) {
-            handleCopyOrCut('copy');
-        }
-    } else if (e.ctrlKey && e.key.toLowerCase() === 'x') {
-        e.preventDefault();
-        if (selectedFiles.size > 0) {
-            handleCopyOrCut('cut');
-        }
-    } else if (e.ctrlKey && e.key.toLowerCase() === 'v') {
-        e.preventDefault();
-        pasteItems();
+// Handle file uploads via drag and drop
+function handleFileUpload(files, targetPath) {
+    if (!files || files.length === 0) return;
+    
+    const formData = new FormData();
+    formData.append('path', targetPath);
+    
+    // Add all files to the form data
+    for (let i = 0; i < files.length; i++) {
+        formData.append('files[]', files[i]);
     }
-});
+    
+    // Show upload progress indicator
+    const notification = document.createElement('div');
+    notification.className = 'notification';
+    notification.innerHTML = `
+        <div class="notification-title">Uploading ${files.length} file(s)...</div>
+        <div class="progress-bar">
+            <div class="progress" style="width: 0%"></div>
+        </div>
+    `;
+    document.body.appendChild(notification);
+    
+    // Create and configure XMLHttpRequest to track upload progress
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '?action=upload', true);
+    
+    xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable) {
+            const percentComplete = (e.loaded / e.total) * 100;
+            notification.querySelector('.progress').style.width = percentComplete + '%';
+        }
+    };
+    
+    xhr.onload = function() {
+        document.body.removeChild(notification);
+        
+        if (xhr.status === 200) {
+            let response;
+            try {
+                response = JSON.parse(xhr.responseText);
+                if (response.status === 'success') {
+                    refresh(); // Refresh the file list to show the new files
+                } else {
+                    alert('Upload Error: ' + response.message);
+                }
+            } catch (e) {
+                alert('Error processing server response');
+            }
+        } else {
+            alert('Upload failed. Server returned status: ' + xhr.status);
+        }
+    };
+    
+    xhr.onerror = function() {
+        document.body.removeChild(notification);
+        alert('Upload failed. Please check your connection and try again.');
+    };
+    
+    xhr.send(formData);
+}
+
+// Function to download a file from a URL to a specific path
+function downloadFromURL(path) {
+    const url = prompt('Enter the URL of the file to download:');
+    if (!url) return;
+    
+    // Basic URL validation
+    if (!url.match(/^https?:\/\/.+/i)) {
+        alert('Please enter a valid URL starting with http:// or https://');
+        return;
+    }
+    
+    // Optionally ask for a custom filename
+    let customFilename = '';
+    if (confirm('Would you like to specify a custom filename? (Click Cancel to use the original filename)')) {
+        customFilename = prompt('Enter the filename:');
+        if (!customFilename) {
+            // User canceled or entered an empty filename
+            return;
+        }
+    }
+    
+    // Show download notification
+    const notification = document.createElement('div');
+    notification.className = 'notification';
+    notification.innerHTML = `
+        <div class="notification-title">Downloading file from URL...</div>
+        <div class="progress-bar">
+            <div class="progress-indeterminate"></div>
+        </div>
+    `;
+    document.body.appendChild(notification);
+    
+    // Prepare data for the request
+    const formData = new FormData();
+    formData.append('url', url);
+    formData.append('path', path);
+    if (customFilename) {
+        formData.append('filename', customFilename);
+    }
+    
+    // Send the download request
+    fetchWithEncoding('?action=download_from_url', {
+        method: 'POST',
+        body: formData
+    })
+    .then(response => response.json())
+    .then(data => {
+        document.body.removeChild(notification);
+        
+        if (data.status === 'success') {
+            alert(`Successfully downloaded file: ${data.filename}`);
+            refresh(); // Refresh to show the new file
+        } else {
+            alert('Download failed: ' + data.message);
+        }
+    })
+    .catch(error => {
+        document.body.removeChild(notification);
+        alert('Download failed: ' + error.message);
+    });
+}
+
+// Update the files display with the current selection state
 </script>
 </body>
 </html> 

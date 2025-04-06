@@ -11,6 +11,8 @@ A modern, feature-rich web-based file management system that mimics Windows Expl
 - ✏️ Rename files and folders
 - 📁 Create new folders
 - 🔄 Drag and drop support
+- 📝 Create and edit text files
+- 📥 Download files from URLs directly to any folder
 
 ### View Options
 - 📊 Grid and List view modes
@@ -24,6 +26,7 @@ A modern, feature-rich web-based file management system that mimics Windows Expl
 - 📱 Responsive design for mobile devices
 - 🖼️ File type icons
 - 📊 Drive space usage bars
+- 📐 Rectangle selection box for multiple files
 
 ### Keyboard Shortcuts
 - `Ctrl + A`: Select all
@@ -52,6 +55,7 @@ A modern, feature-rich web-based file management system that mimics Windows Expl
 - System directory access restrictions
 - UTF-8 encoding support
 - Error handling with user feedback
+- Optional password protection
 
 ## 🌐 Browser Support
 
@@ -76,7 +80,7 @@ The file manager works out of the box with default settings. You can modify the 
 - Allowed file types
 - Interface customization
 - Path configurations
-- Password Protection: To enable password protection, open 'phpfilemanager/index.php' and set the $password variable to the MD5 hash of your desired password (e.g. md5('yourpassword')). Leave it empty for no protection.
+- Password Protection: To enable password protection, open 'index.php' and set the $password variable to the MD5 hash of your desired password (e.g. md5('yourpassword')). Leave it empty for no protection.
 
 ## 🎨 Customization
 
@@ -121,14 +125,27 @@ Feel free to submit issues and enhancement requests!
 3. Drag and drop files to move/copy
 4. Use keyboard shortcuts for quick operations
 
+### Text Editing
+1. Click on any text file to open the built-in editor
+2. Make changes and click Save to update the file
+3. Create new text files with the context menu
+
+### File Uploading
+1. Drag files from your computer directly to any folder
+2. Use "Upload from URL" to download files from the internet
+
 ## ⚠️ Known Limitations
 - Large directory listings may take time to load (a loading spinner will appear next to the path bar during processing)
 - Some operations may be restricted by server permissions
 - File preview limited to supported formats
 
 ## 🔄 Updates
-
-Check the source repository for updates and improvements.
+- Added built-in text file editor
+- Support for downloading files from URLs
+- Improved drag-and-drop selection with rectangle selection box
+- Enhanced mobile device support
+- Dark mode detection based on system preferences
+- Improved error handling with better user feedback
 
 ---
 
