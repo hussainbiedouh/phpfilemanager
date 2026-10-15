@@ -1,4 +1,4 @@
-# Windows File Explorer Simulator 🖥️
+# PHP-Based File Manager 🖥️
 
 A modern, feature-rich web-based file management system that mimics Windows Explorer functionality, built in a single PHP file.
 
